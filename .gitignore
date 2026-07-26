@@ -1,8 +1,19 @@
 __pycache__/
 *.pyc
 .venv/
-data/
-outputs/
-uv.lock
 *.egg-info/
 .DS_Store
+
+# Data — içerik yok, klasör korunur
+data/**
+!data/.gitkeep
+
+# Outputs — içerik yok, klasör yapısı korunur
+outputs/checkpoints/**
+outputs/converted/**
+outputs/logs/**
+outputs/benchmarks/**
+!outputs/checkpoints/.gitkeep
+!outputs/converted/.gitkeep
+!outputs/logs/.gitkeep
+!outputs/benchmarks/.gitkeep
