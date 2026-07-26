@@ -1,0 +1,52 @@
+[project]
+name = "edge-to-server-inference-pipeline"
+version = "0.1.0"
+description = "ArcFace training → LiteRT quantization → Triton serving pipeline"
+requires-python = ">=3.11"
+
+dependencies = [
+    "torch>=2.3.0",
+    "torchvision>=0.18.0",
+    "torchaudio>=2.3.0",
+    "pytorch-metric-learning>=2.4.0",
+    "numpy>=1.26.0",
+    "matplotlib>=3.8.0",
+    "scikit-learn>=1.4.0",
+    "tqdm>=4.66.0",
+    "pillow>=10.0.0",
+    "tensorboard>=2.16.0",
+    "onnx>=1.22.0",
+    "onnx2tf>=1.28.8",
+    "tensorflow>=2.21.0",
+    "tf-keras>=2.21.0",
+    "onnx-graphsurgeon>=0.6.1",
+    "psutil>=7.2.2",
+    "ai-edge-litert>=2.1.6",
+    "sng4onnx>=2.0.1",
+    "ai-edge-torch>=0.2.1",
+    "onnxruntime>=1.28.0",
+    "onnxruntime-tools>=1.7.0",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cuda", marker = "platform_system != 'Darwin'" },
+]
+torchvision = [
+    { index = "pytorch-cuda", marker = "platform_system != 'Darwin'" },
+]
+torchaudio = [
+    { index = "pytorch-cuda", marker = "platform_system != 'Darwin'" },
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/edge_to_server_inference_pipeline"]
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
