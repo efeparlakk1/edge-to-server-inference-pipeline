@@ -1,0 +1,31 @@
+name: "arcface_model"
+backend: "onnxruntime"
+max_batch_size: 64
+
+input [
+  {
+    name: "input"
+    data_type: TYPE_FP32
+    dims: [ 3, 32, 32 ]
+  }
+]
+
+output [
+  {
+    name: "embedding"
+    data_type: TYPE_FP32
+    dims: [ 512 ]
+  }
+]
+
+dynamic_batching {
+  max_queue_delay_microseconds: 50000
+}
+
+instance_group [
+  {
+    count: 2
+    kind: KIND_GPU
+    gpus: [ 0 ]
+  }
+]
