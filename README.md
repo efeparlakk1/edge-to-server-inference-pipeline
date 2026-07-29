@@ -1,58 +1,102 @@
 # Edge-to-Server Inference Pipeline
 
-An end-to-end, production-ready machine learning pipeline featuring **ResNet-18 + ArcFace Metric Learning** training, **ONNX export**, **INT8 dynamic quantization**, **LiteRT (TFLite) conversion**, and automated performance benchmarking.
+An end-to-end, production-ready machine learning pipeline featuring **ResNet-18 + ArcFace Metric Learning** training, **ONNX export**, **INT8 dynamic quantization**, and **Triton Inference Server** deployment with **Dynamic Batching** and automated GPU-aware configuration.
 
 ---
 
 ## 🎯 Purpose
 
-Edge AI deployments and server-side inference engines often require drastically different model representations and optimization trade-offs:
-- **Server Deployment**: High throughput, GPU batching, and ONNX Runtime / Triton Inference Server interoperability.
-- **Edge Deployment**: Strict memory limits, minimal binary footprints, low power consumption, and LiteRT (TFLite) runtime compatibility.
+Edge AI deployments and server-side inference engines require drastically different model representations and optimization trade-offs:
 
-This project bridges that gap by providing an end-to-end, reproducible workflow that trains a feature embedding model (ArcFace loss on ResNet-18), exports it to open interoperable formats (ONNX), quantizes it for memory-constrained edge deployment, and evaluates runtime throughput and latency across model variants.
+- **Edge Deployment**: Strict memory limits, minimal binary footprints, low power consumption.
+- **Server Deployment**: High throughput, GPU batching, gRPC-based client communication, and Triton Inference Server interoperability.
+
+This project bridges that gap by providing a fully reproducible workflow: train a metric learning model (ArcFace loss on ResNet-18), export it to ONNX, quantize it for edge deployment, and serve it at scale via Triton with Dynamic Batching.
 
 ---
 
 ## 📋 Project Scope
 
-The pipeline covers the complete lifecycle of metric learning model development and deployment:
+### Week 1 — Model Training, Export & Quantization
 
 1. **Metric Learning Training (`train.py`)**
-   - Backbone: **ResNet-18** feature extractor producing 512-dimensional embeddings.
-   - Loss Function: **ArcFace (Additive Angular Margin Loss)** via `pytorch-metric-learning` for deep feature discrimination.
-   - Dataset: **CIFAR-10** (60,000 images, 10 classes) with data augmentation (`RandomCrop`, `RandomHorizontalFlip`, `ColorJitter`).
-   - Logging & Checkpointing: Validation accuracy tracking and TensorBoard visualization.
+   - Backbone: **ResNet-18** producing 512-dimensional embeddings.
+   - Loss: **ArcFace (Additive Angular Margin Loss)** via `pytorch-metric-learning`.
+   - Dataset: **CIFAR-10** (60,000 images, 10 classes) with `RandomCrop`, `RandomHorizontalFlip`, `ColorJitter`.
+   - Best validation accuracy: **87.35%** in 30 epochs on RTX 4070 Ti SUPER (~4.5s/epoch).
+   - Logging: TensorBoard + checkpoint saving.
 
 2. **ONNX Export (`scripts/convert_to_onnx.py`)**
-   - Exports the trained PyTorch backbone model to **ONNX Opset 17**.
-   - Configures dynamic batch dimensions (`batch_size`) for flexible server batching.
+   - Exports trained PyTorch backbone to **ONNX Opset 17**.
+   - Dynamic batch dimension configured for flexible server batching.
 
 3. **INT8 Quantization (`scripts/quantize_int8.py`)**
-   - Applies **dynamic INT8 quantization** using ONNX Runtime.
-   - Reduces model storage size by **4×** (from ~45.8 MB to ~11.5 MB).
+   - **Dynamic INT8 quantization** via ONNX Runtime.
+   - **4× size reduction**: ~45.8 MB → ~11.5 MB.
 
-4. **LiteRT / TFLite Conversion (`scripts/convert_to_litert.py`)**
-   - Converts the ONNX model to **TensorFlow SavedModel** and **LiteRT (`.tflite`)** format using `onnx2tf` for edge mobile and embedded runtimes.
+4. **Benchmarking (`scripts/benchmark.py`)**
+   - Evaluates latency (ms), throughput (FPS), and binary size across FP32 and INT8 ONNX models.
 
-5. **Benchmarking & Evaluation (`scripts/benchmark.py`)**
-   - Evaluates CPU inference latency (ms), throughput (FPS), and binary size (MB) across FP32 and INT8 ONNX models using ONNX Runtime.
+### Week 2 — Triton Inference Server & Production Serving
+
+5. **Auto-Config Generator (`scripts/generate_triton_config.py`)**
+   - Queries GPU VRAM and CPU core count via `nvidia-smi` at runtime.
+   - Computes optimal `instance_count`, `max_batch_size`, `preferred_batch_size`, and `queue_delay` automatically.
+   - Writes `triton_repo/arcface_model/config.pbtxt` — no manual tuning required.
+
+6. **Triton Model Repository (`triton_repo/`)**
+   - ONNX Runtime backend with GPU execution.
+   - **Dynamic Batching**: queues concurrent requests and merges them into GPU-efficient batches.
+   - **Multi-instance execution**: multiple model copies run in parallel on the same GPU.
+
+7. **gRPC Client (`client.py`)**
+   - Single-request inference and 500-request sequential load test.
+
+8. **Concurrent Load Test (`scripts/load_test_concurrent.py`)**
+   - 32 parallel threads × 500 requests = 16,000 total requests.
+   - Reports P50 / P95 / P99 latency and throughput FPS.
 
 ---
 
 ## 📊 Benchmark Results
 
-Benchmarks were conducted using ONNX Runtime (`CPUExecutionProvider`) over 200 iterations:
+### Model Optimization (Week 1)
 
-| Model | Binary Size (MB) | Latency (ms) | Throughput (FPS) | Optimization Impact |
-|---|---|---|---|---|
-| **FP32** | 45.8 MB | 0.49 ms | 2045.6 FPS | Baseline full precision model |
-| **INT8** | 11.5 MB | 1.61 ms | 619.4 FPS | **4.0× size reduction** |
+Benchmarks conducted with ONNX Runtime `CPUExecutionProvider`, 200 iterations:
 
-> **Key Takeaways & Quantization Insights:**
-> - **Storage Advantage**: INT8 dynamic quantization yields a **4× reduction in binary size** (~45.8 MB → ~11.5 MB), which is critical for edge deployments, mobile app bundle limits, and over-the-air (OTA) model updates.
-> - **Execution Speed**: Dynamic quantization quantizes model weights to INT8 while keeping activations in FP32, introducing runtime dequantization/quantization overhead on general-purpose CPUs without dedicated INT8 SIMD acceleration.
-> - **Edge Recommendation**: For maximum execution speedups alongside size reduction on edge hardware, static quantization (quantizing both weights and activations with calibration data) or hardware delegate acceleration (e.g., NPU/TPU via LiteRT) should be utilized.
+| Model | Binary Size (MB) | Latency (ms) | Throughput (FPS) | Notes |
+|-------|-----------------|-------------|-----------------|-------|
+| **FP32** | 45.8 | 0.49 | 2,045 | Baseline |
+| **INT8** | 11.5 | 1.61 | 619 | **4× size reduction** |
+
+> **Why INT8 is slower on CPU:** Dynamic quantization quantizes weights to INT8 but dequantizes them back to FP32 at runtime on CPUs without dedicated INT8 SIMD acceleration. Size benefit is real; speed benefit requires static quantization or INT8-capable hardware (NPU/TPU).
+
+### Triton Inference Server (Week 2)
+
+Concurrent load test: 32 threads × 500 requests on RTX 4070 Ti SUPER:
+
+| Metric | Value |
+|--------|-------|
+| Total requests | 16,000 |
+| Total time | 25.71s |
+| Average batch size | ~9.2 |
+| **P50 latency** | **7.02 ms** |
+| P95 latency | 287 ms |
+| P99 latency | 798 ms |
+| **Throughput** | **622 FPS** |
+
+> **P99 note:** High P99 under 32-thread burst load is expected — concurrent threads create artificial queue spikes absent in real production traffic. P50 at 7ms reflects true steady-state latency.
+
+### Auto-Config Output (RTX 4070 Ti SUPER, 16GB)
+
+```
+VRAM total      : 16.0 GB
+Instance count  : 4
+Max batch size  : 128
+Preferred sizes : [32, 64, 128]
+Queue delay     : 2000 µs
+Op threads      : 6
+```
 
 ---
 
@@ -60,90 +104,119 @@ Benchmarks were conducted using ONNX Runtime (`CPUExecutionProvider`) over 200 i
 
 ```
 edge-to-server-inference-pipeline/
-├── configs/                  # Pipeline configurations
-├── data/                     # CIFAR-10 dataset storage
-├── outputs/                  # Exported models, checkpoints, logs & benchmark reports
-│   ├── benchmarks/           # Benchmark result markdown files
-│   ├── checkpoints/          # PyTorch model checkpoints (best_model.pth)
-│   ├── converted/            # Exported ONNX, LiteRT (.tflite), and INT8 models
-│   └── logs/                 # TensorBoard event files
-├── scripts/                  # Processing, conversion, and benchmark scripts
-│   ├── verify_setup.py       # Quick pipeline & hardware verification
-│   ├── convert_to_onnx.py    # PyTorch → ONNX converter
-│   ├── quantize_int8.py      # ONNX FP32 → INT8 dynamic quantizer
-│   ├── convert_to_litert.py  # ONNX → LiteRT (.tflite) converter
-│   └── benchmark.py          # Latency, FPS, and model size benchmark runner
-├── src/                      # Core module implementations
-│   ├── data/                 # Data loading and augmentation routines
-│   ├── losses/               # ArcFace metric learning loss setup
-│   ├── models/               # ResNet-18 feature extractor architecture
-│   └── utils/                # Utility functions
-├── train.py                  # Main PyTorch training loop
-├── pyproject.toml            # Project dependencies and environment specification
-└── README.md                 # Project documentation
+├── src/
+│   ├── data/dataset.py           # CIFAR-10 DataLoader + augmentation
+│   ├── losses/arcface.py         # ArcFace loss wrapper
+│   └── models/resnet_arcface.py  # ResNet-18 + embedding head
+├── scripts/
+│   ├── verify_setup.py           # Environment verification
+│   ├── convert_to_onnx.py        # PyTorch → ONNX
+│   ├── quantize_int8.py          # ONNX FP32 → INT8
+│   ├── benchmark.py              # Latency + FPS benchmark
+│   ├── generate_triton_config.py # GPU-aware Triton config generator
+│   └── load_test_concurrent.py   # Concurrent gRPC load test
+├── triton_repo/
+│   └── arcface_model/
+│       ├── config.pbtxt          # Triton model config (auto-generated)
+│       └── 1/
+│           └── model.onnx        # ONNX model weights
+├── outputs/
+│   ├── checkpoints/              # best_model.pth
+│   ├── converted/                # model.onnx, model_int8.onnx
+│   ├── logs/                     # TensorBoard events
+│   └── benchmarks/               # results.md
+├── client.py                     # gRPC inference client
+├── train.py                      # Main training loop
+└── pyproject.toml                # uv dependencies
 ```
 
 ---
 
 ## ⚡ Quick Start
 
-### 1. Requirements & Installation
+### Requirements
 
-This project uses [`uv`](https://github.com/astral-sh/uv) for fast, reproducible dependency management.
+- Python 3.11+
+- CUDA 12.x + cuDNN
+- Docker + NVIDIA Container Toolkit
+- [`uv`](https://github.com/astral-sh/uv)
+
+### Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/efeparlakk1/edge-to-server-inference-pipeline.git
 cd edge-to-server-inference-pipeline
-
-# Sync environment dependencies
 uv sync
 ```
 
-### 2. Verify Setup
-
-Run the setup verification script to confirm CUDA/CPU environment, PyTorch configuration, and dataset loading:
+### Week 1: Train → Export → Quantize
 
 ```bash
+# 1. Verify environment
 uv run python scripts/verify_setup.py
-```
 
-### 3. Pipeline Workflow
-
-#### Step A: Train Model with ArcFace Loss
-Train ResNet-18 backbone with ArcFace loss on CIFAR-10:
-```bash
+# 2. Train (30 epochs, ~4.5s/epoch on RTX 4070 Ti SUPER)
 uv run python train.py --epochs 30 --batch-size 256
-```
 
-#### Step B: Export to ONNX
-Export PyTorch checkpoint to ONNX format (`outputs/converted/model.onnx`):
-```bash
+# 3. Export to ONNX
 uv run python scripts/convert_to_onnx.py
-```
 
-#### Step C: Quantize to INT8
-Apply dynamic INT8 quantization (`outputs/converted/model_int8.onnx`):
-```bash
+# 4. INT8 quantization
 uv run python scripts/quantize_int8.py
-```
 
-#### Step D: Convert to LiteRT (TFLite)
-Convert ONNX model to LiteRT format (`outputs/converted/model.tflite`):
-```bash
-uv run python scripts/convert_to_litert.py
-```
-
-#### Step E: Run Benchmarks
-Run throughput and latency benchmark across FP32 and INT8 models:
-```bash
+# 5. Benchmark FP32 vs INT8
 uv run python scripts/benchmark.py
+```
+
+### Week 2: Triton Serving
+
+```bash
+# 1. Auto-generate Triton config for your GPU
+uv run python scripts/generate_triton_config.py
+
+# 2. Copy ONNX model to Triton repo
+mkdir -p triton_repo/arcface_model/1
+cp outputs/converted/model.onnx triton_repo/arcface_model/1/model.onnx
+
+# 3. Start Triton (Docker)
+docker run --gpus all --rm \
+  -p 8000:8000 -p 8001:8001 -p 8002:8002 \
+  -v $(pwd)/triton_repo:/models \
+  nvcr.io/nvidia/tritonserver:24.01-py3 \
+  tritonserver --model-repository=/models
+
+# 4. Single inference test
+uv run python client.py
+
+# 5. Concurrent load test (32 threads × 500 requests)
+uv run python scripts/load_test_concurrent.py
 ```
 
 ---
 
-## 🛠️ Tech Stack & Dependencies
+## 🔑 Key Concepts
 
-- **Deep Learning Framework**: PyTorch, Torchvision, `pytorch-metric-learning`
-- **Interoperability & Deployment**: ONNX, ONNX Runtime, `onnx2tf`, `ai-edge-litert`
-- **Environment & Dependency Management**: `uv`, Python 3.11+
+| Concept | What it means in this project |
+|---------|-------------------------------|
+| **ArcFace loss** | Adds angular margin to cosine similarity — tighter clusters, better separation than Cross-Entropy |
+| **ONNX Opset 17** | Framework-agnostic model graph — runs on Triton, TensorRT, CoreML without retraining |
+| **Dynamic quantization** | Weights → INT8 at export time; activations remain FP32 at runtime |
+| **Dynamic Batching** | Triton merges concurrent requests into single GPU batch — maximizes utilization |
+| **Multi-instance execution** | Multiple model copies on same GPU — reduces queuing under high concurrency |
+| **gRPC vs HTTP** | gRPC uses binary Protocol Buffers; ~3–5× lower latency than HTTP/JSON for inference |
+| **P50 / P95 / P99** | Percentile latency — P99 reveals tail latency spikes invisible in averages |
+| **Auto-config** | `generate_triton_config.py` queries `nvidia-smi` and computes instance count, batch sizes, queue delay for any GPU |
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Tools |
+|-------|-------|
+| Training | PyTorch, Torchvision, pytorch-metric-learning |
+| Export | ONNX (Opset 17), ONNX Runtime |
+| Quantization | onnxruntime.quantization |
+| Serving | Triton Inference Server 24.01, ONNX Runtime backend |
+| Client | tritonclient[grpc] |
+| Environment | uv, Python 3.11, CUDA 12.x |
+| GPU | NVIDIA RTX 4070 Ti SUPER (16GB VRAM) |
