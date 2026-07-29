@@ -3,54 +3,51 @@ GPU VRAM'ine göre otomatik Triton config üretici.
 
 Çalıştır:
     uv run python scripts/generate_triton_config.py
-
-Başkası projeyi klonladığında kendi GPU'suna göre
-otomatik optimize edilmiş config alır.
 """
 
 import subprocess
-import sys
 import os
 
 
-def get_vram_gb() -> float:
-    """nvidia-smi ile toplam VRAM'i GB cinsinden döndür."""
+def get_gpu_info() -> dict:
     try:
         out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            ["nvidia-smi",
+             "--query-gpu=memory.total,memory.free",
+             "--format=csv,noheader,nounits"],
             text=True,
-        ).strip().split("\n")[0]
-        return int(out) / 1024
+        ).strip().split("\n")[0].split(",")
+        return {
+            "total_mb": int(out[0].strip()),
+            "free_mb":  int(out[1].strip()),
+        }
     except Exception:
-        print("nvidia-smi bulunamadı — CPU modu varsayıldı (4GB)")
-        return 4.0
+        print("nvidia-smi bulunamadı — varsayılan değerler kullanılıyor")
+        return {"total_mb": 4096, "free_mb": 4096}
 
 
 def get_cpu_cores() -> int:
-    """Mantıksal CPU çekirdek sayısını döndür."""
-    try:
-        return os.cpu_count() or 4
-    except Exception:
-        return 4
+    return os.cpu_count() or 4
 
 
-def compute_config(vram_gb: float, cpu_cores: int) -> dict:
+def compute_config(gpu: dict, cpu_cores: int) -> dict:
     """
-    VRAM ve CPU'ya göre Triton parametrelerini hesapla.
-
-    Mantık:
-      - instance_count : Her instance ~1.5GB VRAM tutar (ResNet18+runtime overhead).
-                         VRAM'in %60'ını kullan, kalanı sistem için bırak.
-      - max_batch_size : Instance başına 32 istek. GPU'yu doldurmak için yeterli.
-      - preferred_batch : max_batch'in %25, %50, %100'ü — kademeli doldurma.
-      - queue_delay     : Düşük VRAM = az instance = daha agresif batching gerekir.
-      - op_threads      : CPU core sayısının yarısı — Triton kendi işleri için yarısına ihtiyaç duyar.
+    Parametre mantığı:
+      - INSTANCE_VRAM_MB : Gerçek ölçüm (3778MB / 6 instance = ~630MB)
+      - VRAM'in %70'ini modellere ayır, %30 aktivasyon+buffer
+      - instance üst sınırı 4 — daha fazlası context switching overhead yaratır
+      - Batch: instance az → büyük batch; çok → küçük batch
+      - Queue delay: instance az → uzun bekle, batch dolsun
     """
-    model_vram_gb     = 1.5
-    usable_vram       = vram_gb * 0.60
-    instance_count    = max(1, int(usable_vram / model_vram_gb))
-    max_batch_size    = instance_count * 32
-    max_batch_size    = min(max_batch_size, 256)  # Triton hard limiti
+    TRITON_OVERHEAD_MB = 800
+    INSTANCE_VRAM_MB   = 650
+    VRAM_UTILIZATION   = 0.70
+
+    usable_mb      = (gpu["total_mb"] - TRITON_OVERHEAD_MB) * VRAM_UTILIZATION
+    instance_count = max(1, min(int(usable_mb / INSTANCE_VRAM_MB), 4))
+
+    batch_per_instance = 64 if instance_count <= 2 else 32
+    max_batch_size     = min(instance_count * batch_per_instance, 256)
 
     preferred_batches = sorted(set([
         max(1, max_batch_size // 4),
@@ -58,11 +55,8 @@ def compute_config(vram_gb: float, cpu_cores: int) -> dict:
         max_batch_size,
     ]))
 
-    # Az instance → daha uzun bekle, batch dolsun
-    # Çok instance → hızlı gönder, kuyruk kısa kalır
-    queue_delay_us = max(1000, 10000 // instance_count)
-
-    op_threads = max(1, cpu_cores // 2)
+    queue_delay_us = 5000 if instance_count <= 2 else 2000
+    op_threads     = max(1, min(cpu_cores // 2, 8))
 
     return {
         "instance_count":    instance_count,
@@ -75,7 +69,6 @@ def compute_config(vram_gb: float, cpu_cores: int) -> dict:
 
 def render_config(cfg: dict) -> str:
     preferred_str = ", ".join(str(b) for b in cfg["preferred_batches"])
-
     return f"""\
 name: "arcface_model"
 backend: "onnxruntime"
@@ -128,13 +121,14 @@ parameters {{
 
 
 def main():
-    vram_gb   = get_vram_gb()
+    gpu       = get_gpu_info()
     cpu_cores = get_cpu_cores()
-    cfg       = compute_config(vram_gb, cpu_cores)
+    cfg       = compute_config(gpu, cpu_cores)
 
-    print(f"\n── Sistem ───────────────────────────────")
-    print(f"  VRAM       : {vram_gb:.1f} GB")
-    print(f"  CPU cores  : {cpu_cores}")
+    print(f"\n── GPU ──────────────────────────────────")
+    print(f"  VRAM toplam   : {gpu['total_mb']/1024:.1f} GB")
+    print(f"  VRAM boş      : {gpu['free_mb']/1024:.1f} GB")
+    print(f"  CPU cores     : {cpu_cores}")
     print(f"\n── Hesaplanan Parametreler ──────────────")
     print(f"  instance_count    : {cfg['instance_count']}")
     print(f"  max_batch_size    : {cfg['max_batch_size']}")
@@ -144,17 +138,10 @@ def main():
 
     out_path = "triton_repo/arcface_model/config.pbtxt"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
     with open(out_path, "w") as f:
         f.write(render_config(cfg))
 
     print(f"\n✓ Config yazıldı: {out_path}")
-    print(f"\nTriton'u başlatmak için:")
-    print(f"  docker run --gpus all --rm \\")
-    print(f"    -p 8000:8000 -p 8001:8001 -p 8002:8002 \\")
-    print(f"    -v $(pwd)/triton_repo:/models \\")
-    print(f"    nvcr.io/nvidia/tritonserver:24.01-py3 \\")
-    print(f"    tritonserver --model-repository=/models")
 
 
 if __name__ == "__main__":

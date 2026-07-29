@@ -26,6 +26,7 @@ dependencies = [
     "ai-edge-torch>=0.2.1",
     "onnxruntime>=1.28.0",
     "onnxruntime-tools>=1.7.0",
+    "tritonclient[grpc]>=2.70.0",
 ]
 
 [tool.uv.sources]
