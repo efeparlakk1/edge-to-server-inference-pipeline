@@ -13,6 +13,8 @@ outputs/checkpoints/**
 outputs/converted/**
 outputs/logs/**
 outputs/benchmarks/**
+STUDY_TR.md
+STUDY.md
 !outputs/checkpoints/.gitkeep
 !outputs/converted/.gitkeep
 !outputs/logs/.gitkeep
