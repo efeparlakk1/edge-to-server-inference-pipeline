@@ -21,8 +21,8 @@ def get_gpu_info() -> dict:
             "total_mb": int(out[0].strip()),
             "free_mb":  int(out[1].strip()),
         }
-    except Exception:
-        print("nvidia-smi bulunamadı — varsayılan değerler kullanılıyor")
+    except (FileNotFoundError, subprocess.CalledProcessError, ValueError, IndexError) as err:
+        print(f"nvidia-smi çağrısı yapılamadı ({type(err).__name__}) — varsayılan değerler kullanılıyor")
         return {"total_mb": 4096, "free_mb": 4096}
 
 
@@ -35,6 +35,7 @@ def compute_config(gpu: dict, cpu_cores: int) -> dict:
     Parametre mantığı:
       - INSTANCE_VRAM_MB : Gerçek ölçüm (3778MB / 6 instance = ~630MB)
       - VRAM'in %70'ini modellere ayır, %30 aktivasyon+buffer
+      - Usable MB hesabında yalnız boş (free) VRAM kullanılır (OOM riski önlenir)
       - instance üst sınırı 4 — daha fazlası context switching overhead yaratır
       - Batch: instance az → büyük batch; çok → küçük batch
       - Queue delay: instance az → uzun bekle, batch dolsun
@@ -43,7 +44,9 @@ def compute_config(gpu: dict, cpu_cores: int) -> dict:
     INSTANCE_VRAM_MB   = 650
     VRAM_UTILIZATION   = 0.70
 
-    usable_mb      = (gpu["total_mb"] - TRITON_OVERHEAD_MB) * VRAM_UTILIZATION
+    # Boş VRAM baz alınır (diğer GPU süreçleri dikkate alınır)
+    available_vram = max(0, gpu["free_mb"] - TRITON_OVERHEAD_MB)
+    usable_mb      = available_vram * VRAM_UTILIZATION
     instance_count = max(1, min(int(usable_mb / INSTANCE_VRAM_MB), 4))
 
     batch_per_instance = 64 if instance_count <= 2 else 32

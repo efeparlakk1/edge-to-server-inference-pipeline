@@ -7,8 +7,10 @@ E�itim döngüsü — kütüphane tabanlı sürüm.
 
 import os
 import time
+import random
 import argparse
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -19,16 +21,27 @@ from src.losses.arcface import build_arcface_loss
 from src.data.dataset import get_dataloaders, CIFAR10_CLASSES
 
 
+def set_seed(seed: int = 42) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
 def get_config() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--embedding-dim",  type=int,   default=512)
-    p.add_argument("--pretrained",     action="store_true", default=True)
-    p.add_argument("--arcface-margin", type=float, default=0.5)
+    p.add_argument("--pretrained",     action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--arcface-margin", type=float, default=28.6)
     p.add_argument("--arcface-scale",  type=float, default=64.0)
     p.add_argument("--epochs",         type=int,   default=30)
     p.add_argument("--batch-size",     type=int,   default=256)
     p.add_argument("--lr",             type=float, default=0.1)
     p.add_argument("--weight-decay",   type=float, default=5e-4)
+    p.add_argument("--seed",           type=int,   default=42)
     p.add_argument("--num-workers",    type=int,   default=4)
     p.add_argument("--data-dir",       type=str,   default="./data")
     p.add_argument("--checkpoint-dir", type=str,   default="./outputs/checkpoints")
@@ -61,6 +74,7 @@ def validate(model, criterion, loader, device):
 
 
 def train(cfg: argparse.Namespace) -> None:
+    set_seed(cfg.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"\n{'='*55}")
@@ -114,7 +128,7 @@ def train(cfg: argparse.Namespace) -> None:
             embeddings = model(images)
             loss       = criterion(embeddings, labels)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(list(model.parameters()) + list(criterion.parameters()), max_norm=5.0)
             optimizer.step()
 
             epoch_loss += loss.item()
@@ -139,10 +153,18 @@ def train(cfg: argparse.Namespace) -> None:
             best_acc = val_acc
             torch.save(
                 {
-                    "epoch":         epoch,
-                    "model_state":   model.state_dict(),
-                    "arcface_state": criterion.state_dict(),
-                    "val_acc":       val_acc,
+                    "epoch":           epoch,
+                    "model_state":     model.state_dict(),
+                    "arcface_state":   criterion.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict(),
+                    "rng_state": {
+                        "python": random.getstate(),
+                        "numpy":  np.random.get_state(),
+                        "torch":  torch.get_rng_state(),
+                        "cuda":   torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                    },
+                    "val_acc":         val_acc,
                 },
                 os.path.join(cfg.checkpoint_dir, "best_model.pth"),
             )
